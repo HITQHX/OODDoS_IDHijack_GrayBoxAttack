@@ -151,3 +151,19 @@ data/
 # Rollout videos and wandb logs
 rollouts/
 wandb/
+run/
+videos/
+adversarial_patches/
+
+
+# Model File
+openvla/
+openvla-main/
+
+#Train Data
+LIBERO/
+malicious_exec_*/
+
+# Embedded library
+dlimp/
+

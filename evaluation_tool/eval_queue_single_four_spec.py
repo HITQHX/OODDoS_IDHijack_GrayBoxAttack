@@ -1,3 +1,4 @@
+'''
 import argparse
 import os
 import subprocess
@@ -99,6 +100,103 @@ def main():
             time.sleep(0.5)  # Small sleep to prevent tight loop
 
 
+
+if __name__ == "__main__":
+    main()
+'''
+
+
+import argparse
+import os
+import subprocess
+import copy
+import time
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Evaluation Queue for EAI Attacks')
+    parser.add_argument('--exp_path', type=str, required=True, help="训练输出的绝对或相对路径，例如: run/GreyBox/exp_id")
+    parser.add_argument('--iter_folder', type=str, default="last", help="指定评测哪个迭代的patch，如 'last' 或 '1000'")
+    parser.add_argument('--cudaid', type=int, default=0)
+    parser.add_argument('--trials', type=int, default=50)
+    parser.add_argument('--task', nargs='+', default=['libero_spatial'])
+    # 忽略原有的 max_concurrent_tasks 参数，防止传参报错
+    parser.add_argument('--max_concurrent_tasks', type=int, default=1) 
+    return parser.parse_args()
+
+def organize_exp(exp_path, args):
+    data = []
+    # 建立任务与对应模型的映射
+    task_map = {
+        "libero_10": "openvla/openvla-7b-finetuned-libero-10",
+        "libero_object": "openvla/openvla-7b-finetuned-libero-object",
+        "libero_goal": "openvla/openvla-7b-finetuned-libero-goal",
+        "libero_spatial": "openvla/openvla-7b-finetuned-libero-spatial"
+    }
+    
+    for t in args.task:
+        if t in task_map:
+            # 这里的坐标 x, y, angle 用于随机补丁变换
+            data.append({"dataset": t, "checkpoints": task_map[t], "x": 120, "y": 160, "angle": 0, "shx": 0, "shy": 0})
+    
+    task_list = []
+    iter_filepath = os.path.join(exp_path, args.iter_folder)
+    pt_filepath = os.path.join(iter_filepath, "patch.pt")
+    
+    if not os.path.exists(pt_filepath):
+        raise FileNotFoundError(f"找不到指定的对抗补丁: {pt_filepath}")
+
+    for idx, d in enumerate(data):
+        for trial in range(args.trials):
+            # 将 rollout 结果视频和日志单独存放在 eval_results 文件夹内，按 task 区分
+            save_dir = os.path.join(exp_path, "eval_results", args.iter_folder, d["dataset"])
+            os.makedirs(save_dir, exist_ok=True)
+            
+            task_dict = copy.deepcopy(d)
+            task_dict["exp_path"] = pt_filepath
+            task_dict["save_dir"] = save_dir
+            task_dict["cudaid"] = args.cudaid
+            task_dict["trial"] = trial
+            task_list.append(task_dict)
+            
+    return task_list
+
+def execute_task(task):
+    cmd = (
+        f"python experiments/robot/libero/run_libero_eval_args_geo_batch.py "
+        f"--model_family openvla "
+        f"--pretrained_checkpoint {task['checkpoints']} "
+        f"--task_suite_name {task['dataset']} "
+        f"--center_crop False "
+        f"--run_id_note eval_{task['dataset']}_{task['trial']} "
+        f"--use_wandb False "
+        f"--x {task['x']} --y {task['y']} --angle {task['angle']} --shx {task['shx']} --shy {task['shy']} "
+        f"--patchroot {task['exp_path']} "
+        f"--eval_dir {task['save_dir']} "
+        f"--geometry True "
+        f"--cudaid {task['cudaid']}"
+    )
+    print(f"\n=======================================================")
+    print(f"🚀 [Trial {task['trial']}] 开始执行: {task['dataset']}")
+    print(f"=======================================================")
+    try:
+        # 🔴 关键修复：去掉了 stdout=subprocess.DEVNULL ！！
+        # 这样 LIBERO 的任何报错或者输入提示都会直接打印在你的屏幕上！
+        subprocess.run(cmd, shell=True, check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"❌ [Trial {task['trial']}] 执行失败，返回码: {e.returncode}")
+
+def main():
+    args = parse_args()
+    task_list = organize_exp(args.exp_path, args)
+    
+    print(f"总计排队测试数量: {len(task_list)} (已切换为绝对安全的单线程顺序执行)")
+    
+    # 直接用最简单的 for 循环，告别多线程的各种灵异 Bug
+    for current_task in task_list:
+        execute_task(current_task)
+        time.sleep(2)  # 给显存一点缓冲释放的时间
 
 if __name__ == "__main__":
     main()
